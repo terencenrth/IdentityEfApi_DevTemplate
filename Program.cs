@@ -1,17 +1,21 @@
-using IdentityEfApi.Database;
+using System.Text;
 using IdentityEfApi.Auth;
 using IdentityEfApi.Data;
+using IdentityEfApi.Database;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using System.Text;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// DbContext
+// DbContext (+ transient retries)
 builder.Services.AddDbContext<AppDbContext>(opts =>
-    opts.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+    opts.UseSqlServer(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        sql => sql.EnableRetryOnFailure()
+    ));
 
 // Identity
 builder.Services
@@ -52,10 +56,34 @@ builder.Services.AddAuthorization();
 // Repository
 builder.Services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
 
-// Controllers & Swagger
+// Controllers & Swagger (with JWT security)
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "IdentityEfApi", Version = "v1" });
+
+    var jwtScheme = new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Description = "Enter: Bearer {your JWT}",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        Reference = new OpenApiReference
+        {
+            Type = ReferenceType.SecurityScheme,
+            Id = JwtBearerDefaults.AuthenticationScheme
+        }
+    };
+
+    c.AddSecurityDefinition(JwtBearerDefaults.AuthenticationScheme, jwtScheme);
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        { jwtScheme, Array.Empty<string>() }
+    });
+});
 
 var app = builder.Build();
 
@@ -67,10 +95,15 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapAuthEndpoints(); // register /auth/register & /auth/login
+app.MapAuthEndpoints(); // /auth/register & /auth/login
+
+// Seed demo data
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    // Ensure DB exists if you're not using migrations at startup:
+    // db.Database.Migrate();
+
     if (!db.Products.Any())
     {
         db.Products.AddRange(
